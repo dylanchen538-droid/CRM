@@ -1,0 +1,24 @@
+import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
+const config=JSON.parse(readFileSync(new URL('../lib/crm-config.json',import.meta.url),'utf8'));
+const host='http://localhost:5173',path='/api/integrations/alibaba';
+assert.equal((await fetch(host+path)).status,401);
+const signin=await fetch(host+'/signin-with-chatgpt?return_to=/',{redirect:'manual'}),cookie=signin.headers.get('set-cookie').split(';')[0];
+const get=async()=>{const r=await fetch(host+path,{headers:{cookie}});assert.equal(r.status,200);return r.json()};
+async function post(action,extra={},otherOrigin=host){const r=await fetch(host+path,{method:'POST',headers:{cookie,origin:otherOrigin,'Content-Type':'application/json'},body:JSON.stringify({action,slot:'meliya',...extra})});const txt=await r.text();let data;try{data=JSON.parse(txt)}catch{data={error:txt}}return {r,data}}
+let status=await get();assert.equal(status.vaultReady,true);assert.equal(status.shops.length,2);assert.equal(status.callbackUrl,host+'/api/integrations/alibaba/oauth/callback');
+assert.equal((await post('save',{version:0,appKey:'local-test-app',appSecret:'local-test-only'},'https://invalid.test')).r.status,403);
+assert.equal((await post('save',{version:0,appKey:'local-test-app',appSecret:''})).data.code,'missing_secret');
+const meixinApp=Object.keys(config.alibabaAppOwners).find(key=>config.alibabaAppOwners[key]==='meixin');
+if(meixinApp)assert.equal((await post('save',{version:0,appKey:meixinApp,appSecret:'local-test-only'})).data.code,'wrong_shop_app');
+const v=status.shops.find(x=>x.slot==='meliya').version;assert.equal(v,0,'Run against a clean local integration database');
+assert.equal((await post('save',{version:0,appKey:'local-test-app',appSecret:'local-test-only'})).r.status,200);
+status=await get();assert.equal(status.shops.find(x=>x.slot==='meliya').configured,true);assert.equal(status.shops.find(x=>x.slot==='meliya').connected,false);assert.equal(JSON.stringify(status).includes('local-test-only'),false);assert.equal(JSON.stringify(status).includes('secret'),false);
+assert.equal((await post('save',{version:0,appKey:'local-test-app',appSecret:'local-test-only'})).data.code,'config_changed');
+assert.equal((await post('copy')).r.status,200);assert.equal((await get()).shops.filter(x=>x.configured).length,2);
+const auth=await post('begin');assert.equal(auth.r.status,200);const url=new URL(auth.data.url);assert.equal(url.origin,'https://open-api.alibaba.com');assert.equal(url.searchParams.get('force_auth'),'true');assert.equal(url.searchParams.get('client_id'),'local-test-app');assert.equal(url.searchParams.get('redirect_uri'),status.callbackUrl);assert.equal(url.searchParams.has('client_secret'),false);const state=url.searchParams.get('state');assert.equal(state.length,64);assert.match(auth.r.headers.get('set-cookie'),/HttpOnly/);
+const wrong=await fetch(host+path+'/oauth/callback?state='+state,{headers:{cookie},redirect:'manual'});assert.equal(wrong.status,303);assert.match(wrong.headers.get('location'),/alibaba=failed/);
+const oauthCookie=auth.r.headers.get('set-cookie').split(';')[0];const noCode=await fetch(host+path+'/oauth/callback?state='+state,{headers:{cookie:cookie+'; '+oauthCookie},redirect:'manual'});assert.equal(noCode.status,303);assert.equal((await get()).shops.find(x=>x.slot==='meliya').diagnosis.code,'missing_code');
+const replay=await fetch(host+path+'/oauth/callback?state='+state+'&code=do-not-exchange',{headers:{cookie:cookie+'; '+oauthCookie},redirect:'manual'});assert.equal(replay.status,303);assert.equal((await get()).shops.find(x=>x.slot==='meliya').connected,false);
+assert.equal((await post('preview')).data.code,'not_connected');assert.equal((await post('confirm')).data.code,'no_pending');assert.equal((await post('import',{previewId:'forged'})).data.code,'preview_expired');assert.equal((await post('disconnect',{version:1})).r.status,200);
+console.log('PASS: anonymous rejection, encrypted-save readiness, CSRF, write-only secret, config version conflicts, separate shop configs, ICBU URL and nonce cookie, callback cookie validation, one-use state, unbound preview/import rejection, disconnect. No live credentials or outbound Alibaba requests used.');

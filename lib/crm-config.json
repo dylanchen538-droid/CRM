@@ -1,0 +1,12 @@
+{
+  "publicOrigin": "",
+  "mailbox": "export@example.com",
+  "inquiryAccounts": {
+    "美利雅国际站": "meliya-example",
+    "美欣国际站": "meixin-example"
+  },
+  "alibabaAppOwners": {},
+  "owners": [
+    "待分配"
+  ]
+}
